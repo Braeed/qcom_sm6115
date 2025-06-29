@@ -1,0 +1,53 @@
+name: Build Kernel on GitHub Actions
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v4
+
+    - name: Update Environment
+      run: sudo apt update -y
+      
+    - name: Install Dependencies
+      run: |
+        sudo apt install -y git-core gnupg build-essential zip \
+        curl libarchive-tools flex \
+        unzip python3 python3-pip python3-dev \
+        python-is-python3 ccache libncurses5-dev lzop \
+        patchelf git-lfs ripgrep &> /dev/null
+        
+    - name: KernelSU backslashxx fork
+      run: | 
+        curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/refs/heads/magic/kernel/setup.sh" | bash -s 12104+155
+        
+    - name: Download Neutron Toolchain
+      run: bash scripts/build-script.sh --tools
+
+    - name: Build hanikrnl.
+      run: bash scripts/build-script.sh --build
+
+    - name: Prepare Flashable ZIP
+      run: |
+        lastcommit=$(git log -n 1 --pretty=format:'%h' | cut -c 1-7)
+        branch=$(git rev-parse --abbrev-ref HEAD)
+        ZIPNAME="4.19-valeryn."$lastcommit".zip" && echo "ZIPNAME=$ZIPNAME" >> $GITHUB_ENV
+        git clone https://github.com/Braeed/AnyKernel3.git
+        mkdir -p AnyKernel3
+        cp out/arch/arm64/boot/Image AnyKernel3/
+        cp out/arch/arm64/boot/dtbo.img AnyKernel3/
+        cp out/arch/arm64/boot/dtb AnyKernel3/
+        rm -f AnyKernel3/README.md 
+        rm -rf AnyKernel3/.git
+        find AnyKernel3/ -name "*placeholder*" -exec rm -rf {} +
+        
+    - name: Upload kernel
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.ZIPNAME }}
+        path: ./AnyKernel3/*
+        compression-level: 9
