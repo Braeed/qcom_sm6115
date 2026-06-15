@@ -3614,15 +3614,14 @@ static void walk_mm(struct lruvec *lruvec, struct mm_struct *mm, struct lru_gen_
 		/* page_update_gen() requires stable page_memcg() */
 		if (!mem_cgroup_trylock_pages(memcg))
 			break;
-
 		/* the caller might be holding the lock for write */
-		if (down_read_trylock(&mm->mmap_sem)) {
+		if (mmap_read_trylock(mm)) {
 			unsigned long start = walk->next_addr;
 			unsigned long end = mm->highest_vm_end;
 
 			err = walk_page_range(start, end, &args);
 
-			up_read(&mm->mmap_sem);
+			mmap_read_unlock(mm);
 
 			if (walk->batched) {
 				spin_lock_irq(&pgdat->lru_lock);
