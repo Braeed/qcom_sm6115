@@ -1,0 +1,127 @@
+name: Build Android Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      OUT_DIR: ${{ github.workspace }}/out
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchain
+      KBUILD_BUILD_USER: Braaed
+      KBUILD_BUILD_HOST: github-actions
+      KBUILD_BUILD_VERSION: 1
+    
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v7
+
+    - name: Install dependencies
+      run: |
+        sudo apt update -y
+        sudo apt install -y \
+          build-essential bc bison flex \
+          libelf-dev \
+          xz-utils \
+          git curl \
+          python3 \
+          zip unzip  \
+
+    - name: Setup Neutron Toolchain
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        mkdir -p "$TOOLCHAIN_DIR"
+        cd "$TOOLCHAIN_DIR"
+
+        curl -fsSLo antman \
+          https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman
+
+        chmod +x antman
+
+        ./antman -S --noprogress
+
+        ./antman --patch=glibc
+
+        ./bin/clang --version
+
+    - name: Setup KernelSUxx
+      shell: bash
+      run: |
+        curl -LSs https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh | bash -s master
+
+    - name: Build Kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+        export ARCH="arm64"
+        export SUBARCH="arm64"
+        export CLANG_TRIPLE="aarch64-linux-gnu-"
+        export CROSS_COMPILE="aarch64-linux-gnu-"
+        export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
+        export CC="clang"
+        export AR="llvm-ar"
+        export NM="llvm-nm"
+        export LD="ld.lld -S"
+        export OBJCOPY="llvm-objcopy"
+        export OBJDUMP="llvm-objdump"
+        export STRIP="llvm-strip"
+        mkdir -p "$OUT_DIR"
+
+        make \
+          O="$OUT_DIR" \
+          LLVM=1 \
+          LLVM_IAS=1 \
+          vendor/bengal-perf_defconfig 
+
+        make -j$(nproc) \
+          O="$OUT_DIR" \
+          LLVM=1 \
+          LLVM_IAS=1 
+
+        make \
+          O="$OUT_DIR" \
+          LLVM=1 \
+          LLVM_IAS=1 \
+          INSTALL_HDR_PATH=kernel_headers \
+          headers_install
+
+    - name: Prepare AnyKernel3 ZIP
+      shell: bash
+      run: |
+        lastcommit=$(git log -n 1 --pretty=format:'%h' | cut -c 1-7)
+        ZIPNAME="4.19-valeryn-ksu.${lastcommit}"
+        echo "ZIPNAME=$ZIPNAME" >> $GITHUB_ENV
+
+        git clone https://github.com/Braeed/AnyKernel3.git --depth 1
+        
+        echo "===== Boot Directory ====="
+        find "$OUT_DIR/arch/arm64/boot" -maxdepth 3 -type f | sort
+
+        # Ensure dtb exists
+        if [ ! -f "$OUT_DIR/arch/arm64/boot/dtb" ]; then
+            echo "boot/dtb not found, using bengal.dtb..."
+
+            cp \
+              "$OUT_DIR/arch/arm64/boot/dts/vendor/qcom/bengal.dtb" \
+              "$OUT_DIR/arch/arm64/boot/dtb"
+        fi
+
+        cp "$OUT_DIR/arch/arm64/boot/dtbo.img" AnyKernel3/
+        cp "$OUT_DIR/arch/arm64/boot/dtb" AnyKernel3/
+        cp "$OUT_DIR/arch/arm64/boot/Image" AnyKernel3/
+        
+        rm -rf AnyKernel3/.git AnyKernel3/README.md
+        find AnyKernel3 -name "*placeholder*" -delete
+
+    - name: Upload Kernel
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ env.ZIPNAME }}
+        path: AnyKernel3/*
+        compression-level: 9
