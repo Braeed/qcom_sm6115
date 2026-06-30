@@ -1,0 +1,191 @@
+name: Build Android Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      use-ccache:
+        description: "Use ccache for compilation"
+        type: boolean
+        default: true
+      neutron-tag:
+        description: "Neutron Toolchain"
+        type: string
+        required: true
+        default: "30062026"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      OUT_DIR: ${{ github.workspace }}/out
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchain
+      KBUILD_BUILD_USER: Braaed
+      KBUILD_BUILD_HOST: github-actions
+      KBUILD_BUILD_VERSION: 1
+    
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v7
+
+    - name: Install dependencies
+      run: |
+        sudo apt update -y
+        sudo apt install -y \
+          build-essential bc bison flex \
+          libelf-dev \
+          xz-utils \
+          git curl \
+          python3 \
+          zip unzip ccache \
+
+    - name: Restore ccache
+      id: restore-ccache
+      if: inputs.use-ccache
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.ccache
+        key: ccache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}-${{ inputs.neutron-tag }}
+        restore-keys: |
+          ccache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}-
+          ccache-${{ runner.os }}-${{ github.repository }}-
+
+    - name: Restore Neutron Toolchain
+      id: neutron-cache
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ env.TOOLCHAIN_DIR }}
+        key: neutron-toolchain-${{ runner.os }}-${{ inputs.neutron-tag }}
+
+    - name: Setup Neutron Toolchain
+      if: steps.neutron-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        mkdir -p "$TOOLCHAIN_DIR"
+        cd "$TOOLCHAIN_DIR"
+
+        curl -fsSLo antman \
+          https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman
+
+        chmod +x antman
+
+        ./antman -S=${{ inputs.neutron-tag }} --noprogress
+
+        ./antman --patch=glibc
+
+        ./bin/clang --version
+
+    - name: Save Neutron Toolchain
+      if: always() && steps.neutron-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ env.TOOLCHAIN_DIR }}
+        key: neutron-toolchain-${{ runner.os }}-${{ inputs.neutron-tag }}
+
+    - name: Setup KernelSU
+      shell: bash
+      run: |
+        curl -LSs https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh | bash -s master
+
+    - name: Setup ccache
+      if: ${{ inputs.use-ccache }}
+      shell: bash
+      run: |
+        mkdir -p ~/.ccache
+
+        echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
+        echo "CCACHE_MAXSIZE=10G" >> $GITHUB_ENV
+
+        ccache --max-size=10G
+        ccache --zero-stats
+
+        ccache --set-config=compiler_check=content
+        ccache --set-config=compression=true
+        ccache --set-config=compression_level=5
+
+    - name: Build Kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+        if [[ "${{ inputs.use-ccache }}" == "true" ]]; then
+            export CC="ccache clang"
+            export USE_CCACHE=1
+            echo "Using ccache."
+        else
+            export CC="clang"
+            echo "Building without ccache."
+        fi
+        mkdir -p "$OUT_DIR"
+
+        make \
+          O="$OUT_DIR" \
+          ARCH=arm64 \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          LLVM=1 \
+          LLVM_IAS=1 \
+          vendor/bengal-perf_defconfig 
+
+        make -j$(nproc) \
+          O="$OUT_DIR" \
+          ARCH=arm64 \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          LLVM=1 \
+          LLVM_IAS=1 
+
+        make \
+          O="$OUT_DIR" \
+          ARCH=arm64 \
+          LLVM=1 \
+          LLVM_IAS=1 \
+          INSTALL_HDR_PATH=kernel_headers \
+          headers_install
+
+    - name: Show ccache stats
+      if: ${{ always() && inputs.use-ccache }}
+      run: |
+        ccache --show-stats
+
+    - name: Save ccache
+      uses: actions/cache/save@v6
+      with:
+        path: ~/.ccache
+        key: ccache-${{ runner.os }}-${{ github.repository }}-${{ github.ref_name }}-${{ inputs.neutron-tag }}
+
+    - name: Prepare AnyKernel3 ZIP
+      shell: bash
+      run: |
+        lastcommit=$(git log -n 1 --pretty=format:'%h' | cut -c 1-7)
+        ZIPNAME="4.19-valeryn-ksu.${lastcommit}"
+        echo "ZIPNAME=$ZIPNAME" >> $GITHUB_ENV
+
+        git clone https://github.com/Braeed/AnyKernel3.git --depth 1
+        
+        echo "===== Boot Directory ====="
+        find "$OUT_DIR/arch/arm64/boot" -maxdepth 3 -type f | sort
+
+        # Ensure dtb exists
+        if [ ! -f "$OUT_DIR/arch/arm64/boot/dtb" ]; then
+            echo "boot/dtb not found, using bengal.dtb..."
+
+            cp \
+              "$OUT_DIR/arch/arm64/boot/dts/vendor/qcom/bengal.dtb" \
+              "$OUT_DIR/arch/arm64/boot/dtb"
+        fi
+
+        cp "$OUT_DIR/arch/arm64/boot/dtbo.img" AnyKernel3/
+        cp "$OUT_DIR/arch/arm64/boot/dtb" AnyKernel3/
+        cp "$OUT_DIR/arch/arm64/boot/Image" AnyKernel3/
+        
+        rm -rf AnyKernel3/.git AnyKernel3/README.md
+        find AnyKernel3 -name "*placeholder*" -delete
+
+    - name: Upload Kernel
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ env.ZIPNAME }}
+        path: AnyKernel3/*
+        compression-level: 9
