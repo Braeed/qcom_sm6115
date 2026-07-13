@@ -890,7 +890,7 @@ endif
 
 ifdef CONFIG_LTO_CLANG
 ifdef CONFIG_THINLTO
-lto-clang-flags	:= -flto=thin -fsplit-lto-unit
+lto-clang-flags	:= -flto=thin
 else
 lto-clang-flags	:= -flto
 endif
