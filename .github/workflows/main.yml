@@ -63,7 +63,7 @@ jobs:
       run: |
         curl -LSsf --retry 3 --retry-delay 2 \
           -o /tmp/ksu-setup.sh \
-          https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh
+          https://raw.githubusercontent.com/Braeed/KernelSUXX/master/kernel/setup.sh
         bash /tmp/ksu-setup.sh master
 
     # ---------- Config fragment (merged at build time, defconfig untouched) ----------
